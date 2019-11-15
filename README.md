@@ -1,4 +1,4 @@
-This firmware is a case study to circumvent DS2432's security feature by implementing man-in-the-middle software between onewire master and a DS2432 slave.
+This firmware is a case study to circumvent DS2432's security feature by implementing a man-in-the-middle software between onewire master and a DS2432 slave.
 
 All implementation is based on 
 
