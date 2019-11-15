@@ -55,7 +55,7 @@ static volatile enum {
 	F120_ROM_CMD,
 	F120_MEM_CMD,
 	F120_ROMCMD_READROM,
-	F120_ROM_MATCH,
+	F120_ROMCMD_MATCHROM,
 	F120_ROM_SEARCH,
 	F120_ROM_RESUME_CMD,
 	F120_ROM_OD_SKIP,
@@ -70,6 +70,7 @@ static volatile enum {
 	DS2432_DS2432_PRESENT,
 	DS2432_ROM_CMD,
 	DS2432_ROMCMD_READROM,
+	DS2432_ROMCMD_MATCHROM,
     DS2432_MAX
 } ds2432_state = DS2432_IDLE;
 
@@ -81,6 +82,7 @@ static uint8_t bit_ctr = 0;
 static uint8_t byte = 0;
 static uint8_t byte_ctr = 0;
 /*static uint8_t rom_cmd[8] = {0};*/
+static bool rx_mode = false;
 
 void mitm_setup(void) {
     /* F120 Master */
@@ -157,15 +159,17 @@ void EXTI_ISR(F120_PIN)(void) {
                 break;
             case F120_ROMCMD_READROM:
                 /* This must be triggered by F120 (HW triggered) */
-                bit_ctr++;
-                byte_ctr = bit_ctr / 8;
+                if (rx_mode == false) {
+                    bit_ctr++;
+                    byte_ctr = bit_ctr / 8;
 
-                if (bit_ctr == 64) {
-                    f120_state = F120_MEM_CMD;
-                    byte_ctr = 0;
+                    if (bit_ctr == 64) {
+                        f120_state = F120_MEM_CMD;
+                        byte_ctr = 0;
+                    }
                 }
                 break;
-            case F120_ROM_MATCH:
+            case F120_ROMCMD_MATCHROM:
                 /* Master TX bits to match ROM */
                 /* Relay signal to DS2432 */
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
@@ -188,7 +192,6 @@ void EXTI_ISR(F120_PIN)(void) {
         switch (f120_state) {
             case F120_IDLE:
                 /* This must be triggered by F120 (HW triggered) */
-                f120_state = F120_RESET;
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_WAIT_PRESENCE:
@@ -204,8 +207,12 @@ void EXTI_ISR(F120_PIN)(void) {
                 break;
             case F120_ROMCMD_READROM:
                 /* F120 will always initiate the Read Time Slot */
-                /* This must be triggered by F120 (HW triggered) */
-                gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
+                /* rx_mode must be false if init by F120 (HW triggered) */
+                if (rx_mode == false) {
+                    rx_mode = true;
+                    gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
+                }
+                /* Do nothing if init by SW */
                 /* DS2432 TX:
                  *   Chip Family Code 1byte
                  *   Serial Number    6bytes
@@ -213,19 +220,19 @@ void EXTI_ISR(F120_PIN)(void) {
                  * No need to sniff the 64bits sent back by DS2432
                  */
                 break;
-            case F120_ROM_MATCH:
+            case F120_ROMCMD_MATCHROM:
                 /* Master TX bits to match ROM */
                 /* Relay signal to DS2432 */
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROM_SEARCH:
                 /* Relay signal to DS2432 */
-
                 break;
             case F120_MEM_CMD:
                 /* If DS2432 doesn't respond, the reset pulse will trigger */
                 break;
             default:
+                f120_state = F120_IDLE;
                 break;
         }
 		timer_clear_flag(TIM(F120_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF); // clear all flags
@@ -237,6 +244,9 @@ void TIM_ISR(F120_TIMER)(void) {
     if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_UIF)) {
         if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)) == 0) {
             f120_state = F120_RESET;
+            ds2432_state = DS2432_RESET;
+            f120_rc_flag = false;
+            rx_mode = false;
         }
         timer_disable_counter(TIM(F120_TIMER));
         timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE);
@@ -284,24 +294,6 @@ void TIM_ISR(F120_TIMER)(void) {
         }
         timer_clear_flag(TIM(F120_TIMER), TIM_SR_CC2IF);
     }
-
-    /*if (f120_state == F120_IDLE) {
-        if (!(gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)))) {
-            f120_state = F120_RESET;
-        }
-    }*/
-
-    /*if (f120_state == F120_ROM_MATCH) {
-        if (!(gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)))) {
-            f120_state = F120_RESET;
-        }
-    }*/
-
-    /*if (f120_state == F120_ROMCMD_READROM) {
-        if (!(gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)))) {
-            gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
-        }
-    }*/
 }
 
 void EXTI_ISR(DS2432_PIN)(void) {
@@ -309,19 +301,19 @@ void EXTI_ISR(DS2432_PIN)(void) {
 
     if (gpio_get(GPIO(DS2432_PORT), GPIO(DS2432_PIN))) { /* high */
         switch (ds2432_state) {
-            case DS2432_RESET:
-                /* This should be from F120 GPIO (SW triggered) */
-                ds2432_state = DS2432_WAIT_PRESENCE;
-                break;
             case DS2432_DS2432_PRESENT:
                 /* This must be triggered by DS2432 chip (HW triggered)*/
                 ds2432_state = DS2432_ROM_CMD;
                 gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
                 break;
+            case DS2432_ROMCMD_READROM:
+                if (rx_mode == true) {
+                    rx_mode = false;
+                    gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
+                }
+                break;
             case DS2432_ROM_CMD:
-                /* This should be from F120 GPIO (SW triggered) */
-                /* F120 is in TX Mode, just chill */
-                /*break;*/
+            case DS2432_ROMCMD_MATCHROM:
             default:
                 break;
         }
@@ -330,20 +322,30 @@ void EXTI_ISR(DS2432_PIN)(void) {
 		timer_set_counter(TIM(DS2432_TIMER), 0); // reset timer counter
 		timer_disable_irq(TIM(DS2432_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE); // disable all timers
         switch (ds2432_state) {
-            case DS2432_IDLE:
-                /* This should be from F120 GPIO (SW triggered) */
-                ds2432_state = DS2432_RESET;
-                break;
             case DS2432_WAIT_PRESENCE:
                 /* This must be triggered by DS2432 chip (HW triggered) */
                 ds2432_state = DS2432_DS2432_PRESENT;
                 gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
             case DS2432_ROMCMD_READROM:
-                /* This must be triggered by DS2432 chip (HW triggered) */
-                /* F120 is in RX Mode */
-                gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
+            /* In Read ROM (Master RX Mode), the initial signal (low) from Master ilicits
+             * a response from DS2432 (if the bit to be transmitted is zero), however,
+             * since the master GPIO signal is emulated by software, it will remain low even 
+             * after the DS2432 stopped pulling it. To overcome this, a flag is set to determine
+             * whether the signal is from DS2432 or from the master.
+             * The signal from DS2432 will be relayed to master while the signal from master
+             * will set the signal back to high
+             */
+                if (rx_mode == true) {
+                    rx_mode = false;
+                    gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
+                } else {
+                    rx_mode = true;
+                    gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
+                }
                 break;
+            case DS2432_IDLE:
             case DS2432_ROM_CMD:
+            case DS2432_ROMCMD_MATCHROM:
             default:
                 break;
         }
