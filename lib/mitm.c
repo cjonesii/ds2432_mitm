@@ -64,8 +64,7 @@ static volatile enum {
 } f120_state = F120_IDLE;
 
 static volatile enum {
-	DS2432_IDLE,
-	DS2432_RESET,
+    DS2432_IDLE,
 	DS2432_WAIT_PRESENCE,
 	DS2432_DS2432_PRESENT,
 	DS2432_ROM_CMD,
@@ -112,23 +111,6 @@ void mitm_setup(void) {
 	exti_enable_request(EXTI(F120_PIN));
 	nvic_enable_irq(NVIC_EXTI_IRQ(F120_PIN));
 
-    /* DS2432 Slave*/
-    rcc_periph_clock_enable(RCC_TIM(DS2432_TIMER));
-	timer_reset(TIM(DS2432_TIMER));
-    timer_set_mode(TIM(DS2432_TIMER), TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
-	timer_set_prescaler(TIM(DS2432_TIMER), 1-1);
-	timer_set_period(TIM(F120_TIMER), 33259);
-	timer_set_oc_mode(TIM(F120_TIMER), TIM_OC1, TIM_OCM_FROZEN);
-	timer_set_oc_value(TIM(F120_TIMER), TIM_OC1, 16*(rcc_ahb_frequency/1000000)-1); /*1151);*/
-	timer_set_oc_mode(TIM(F120_TIMER), TIM_OC2, TIM_OCM_FROZEN);
-	timer_set_oc_value(TIM(F120_TIMER), TIM_OC2, 45*(rcc_ahb_frequency/1000000)-1-350); /*2289);*/
-	timer_set_oc_mode(TIM(F120_TIMER), TIM_OC1, TIM_OCM_FROZEN);
-	timer_set_oc_value(TIM(F120_TIMER), TIM_OC1, 6497);
-	timer_clear_flag(TIM(DS2432_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF);
-	timer_update_on_overflow(TIM(F120_TIMER));
-	timer_enable_irq(TIM(DS2432_TIMER), TIM_DIER_UIE);
-	nvic_enable_irq(NVIC_TIM_IRQ(DS2432_TIMER));
-
     gpio_set(GPIO(DS2432_PORT),GPIO(DS2432_PIN));
     gpio_set_mode(GPIO(DS2432_PORT), GPIO_MODE_OUTPUT_50_MHZ, GPIO_CNF_OUTPUT_OPENDRAIN, GPIO(DS2432_PIN));
 
@@ -136,25 +118,24 @@ void mitm_setup(void) {
 	exti_set_trigger(EXTI(DS2432_PIN), EXTI_TRIGGER_BOTH);
 	exti_enable_request(EXTI(DS2432_PIN));
 	nvic_enable_irq(NVIC_EXTI_IRQ(DS2432_PIN));
+    f120_state = F120_IDLE;
+    ds2432_state = DS2432_IDLE
 }
 
 void EXTI_ISR(F120_PIN)(void) {
     exti_reset_request(EXTI(F120_PIN));
 
-    if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) { /* high */
+    if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) { /* F120 GPIO Pulled High */
         switch (f120_state) {
             case F120_RESET:
                 /* This must be triggered by F120 (HW triggered) */
-                f120_state = F120_WAIT_PRESENCE;
+                ds2432_state = DS2432_WAIT_PRESENCE:
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_DS2432_PRESENT:
-                /* This should be from DS2432 GPIO (SW triggered) */
-                /* F120 is in TX Mode */
                 f120_state = F120_ROM_CMD;
                 break;
             case F120_ROM_CMD:
-                /* This must be triggered by F120 (HW triggered) */
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROMCMD_READROM:
@@ -178,11 +159,8 @@ void EXTI_ISR(F120_PIN)(void) {
                     f120_rc_flag = true;
                     f120_state = F120_MEM_CMD;
                 }
+                break;
             default:
-				/* F120_IDLE 
-				 * F120_WAIT_PRESENCE
-				 * f120_state = F120_IDLE;
-                 */
 				break;
         }
     } else { /* low */
@@ -191,18 +169,14 @@ void EXTI_ISR(F120_PIN)(void) {
 		timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE); // disable all timers
         switch (f120_state) {
             case F120_IDLE:
-                /* This must be triggered by F120 (HW triggered) */
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_WAIT_PRESENCE:
-                /* This should be from DS2432 GPIO (SW triggered) */
-                f120_state = F120_DS2432_PRESENT;
+                ds2432_state = DS2432_DS2432_PRESENT;
                 break;
             case F120_ROM_CMD:
-                /* This must be triggered by F120 (HW triggered) */
-                /* F120 is in TX Mode */
-                /* Trigger the timer to sniff what bit is sent */
                 timer_enable_irq(TIM(F120_TIMER), TIM_DIER_CC2IE);
+                ds2432_state = DS2432_ROM_CMD;
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROMCMD_READROM:
@@ -232,67 +206,10 @@ void EXTI_ISR(F120_PIN)(void) {
                 /* If DS2432 doesn't respond, the reset pulse will trigger */
                 break;
             default:
-                f120_state = F120_IDLE;
                 break;
         }
 		timer_clear_flag(TIM(F120_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF); // clear all flags
 		timer_enable_counter(TIM(F120_TIMER)); // start timer to measure the configured timeouts
-    }
-}
-
-void TIM_ISR(F120_TIMER)(void) {
-    if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_UIF)) {
-        if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)) == 0) {
-            f120_state = F120_RESET;
-            ds2432_state = DS2432_RESET;
-            f120_rc_flag = false;
-            rx_mode = false;
-        }
-        timer_disable_counter(TIM(F120_TIMER));
-        timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE);
-        timer_clear_flag(TIM(F120_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF);
-    }
-    if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_CC2IF)) {
-        switch (f120_state) {
-            case F120_ROM_CMD:
-                if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) {
-                    byte = byte | (1 << bit_ctr);
-                    bit_ctr++;
-                    if (bit_ctr == 8) {
-                        bit_ctr = 0;
-                        switch(byte) {
-                            case 0x33: /* Read ROM */
-                                f120_state = F120_ROMCMD_READROM;
-                                ds2432_state = DS2432_ROMCMD_READROM;
-                                break;
-                            case 0x55: /* Match ROM */
-                                f120_state = F120_ROM_MATCH;
-                                break;
-                            case 0xf0: /* Search ROM */
-                                f120_state = F120_ROM_SEARCH;
-                                break;
-                            case 0xcc: /* Skip ROM */
-                                f120_state = F120_MEM_CMD;
-                                break;
-                            case 0xa5: /* Resume Command */
-                                f120_state = F120_ROM_RESUME_CMD;
-                                break;
-                            case 0x3c: /* OD Skip ROM */
-                                f120_state = F120_ROM_OD_SKIP;
-                                break;
-                            case 0x69: /* OD Match ROM */
-                                f120_state = F120_ROM_OD_MATCH;
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                }
-                break;
-            default:
-                break;
-        }
-        timer_clear_flag(TIM(F120_TIMER), TIM_SR_CC2IF);
     }
 }
 
@@ -302,8 +219,7 @@ void EXTI_ISR(DS2432_PIN)(void) {
     if (gpio_get(GPIO(DS2432_PORT), GPIO(DS2432_PIN))) { /* high */
         switch (ds2432_state) {
             case DS2432_DS2432_PRESENT:
-                /* This must be triggered by DS2432 chip (HW triggered)*/
-                ds2432_state = DS2432_ROM_CMD;
+                f120_state = F120_DS2432_PRESENT;
                 gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
                 break;
             case DS2432_ROMCMD_READROM:
@@ -312,19 +228,13 @@ void EXTI_ISR(DS2432_PIN)(void) {
                     gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
                 }
                 break;
-            case DS2432_ROM_CMD:
-            case DS2432_ROMCMD_MATCHROM:
             default:
                 break;
         }
-    } else { /* low */
-		timer_disable_counter(TIM(DS2432_TIMER)); // stop timer for reconfiguration
-		timer_set_counter(TIM(DS2432_TIMER), 0); // reset timer counter
-		timer_disable_irq(TIM(DS2432_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE); // disable all timers
+    } else { /* DS2432 GPIO Pulled Low */
         switch (ds2432_state) {
             case DS2432_WAIT_PRESENCE:
-                /* This must be triggered by DS2432 chip (HW triggered) */
-                ds2432_state = DS2432_DS2432_PRESENT;
+                f120_state = F120_WAIT_PRESENCE;
                 gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
             case DS2432_ROMCMD_READROM:
             /* In Read ROM (Master RX Mode), the initial signal (low) from Master ilicits
@@ -343,17 +253,42 @@ void EXTI_ISR(DS2432_PIN)(void) {
                     gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
                 }
                 break;
-            case DS2432_IDLE:
-            case DS2432_ROM_CMD:
-            case DS2432_ROMCMD_MATCHROM:
             default:
                 break;
         }
-		timer_clear_flag(TIM(DS2432_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF); // clear all flags
-		timer_enable_counter(TIM(DS2432_TIMER)); // start timer to measure the configured timeouts
     }
 }
 
+void TIM_ISR(F120_TIMER)(void) {
+    if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_UIF)) {
+        if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)) == 0) {
+            f120_state = F120_RESET;
+            f120_rc_flag = false;
+            rx_mode = false;
+        }
+        timer_disable_counter(TIM(F120_TIMER));
+        timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE);
+        timer_clear_flag(TIM(F120_TIMER), TIM_SR_UIF | TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC3IF);
+    }
+
+    if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_CC2IF)) {
+        switch (f120_state) {
+            case F120_ROM_CMD:
+                bit_ctr++;
+                if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) {
+                    byte = byte | (1 << bit_ctr);
+                }
+                if (bit_ctr == 8) {
+                    bit_ctr = 0;
+                    f120_state = F120_ROM_CMD_DONE;
+                }
+                break;
+            default:
+                break;
+        }
+        timer_clear_flag(TIM(F120_TIMER), TIM_SR_CC2IF);
+    }
+}
 
 /* Logs */
 /* 20191107 - Done initialization and reset */
