@@ -166,6 +166,9 @@ error:
 /** program entry point
  *  this is the firmware function started by the micro-controller
  */
+
+//extern uint8_t byte;
+
 void main(void);
 void main(void)
 {	
@@ -281,33 +284,11 @@ void main(void)
 			}
 		}
 
-        while (rom_cmd_received) {
-                                switch(byte) {
-                            case 0x33: /* Read ROM */
-                                f120_state = F120_ROM_CMD_DONE;
-                                break;
-                            case 0x55: /* Match ROM */
-                                f120_state = F120_ROMCMD_MATCHROM;
-                                break;
-                            case 0xf0: /* Search ROM */
-                                f120_state = F120_ROM_SEARCH;
-                                break;
-                            case 0xcc: /* Skip ROM */
-                                f120_state = F120_MEM_CMD;
-                                break;
-                            case 0xa5: /* Resume Command */
-                                f120_state = F120_ROM_RESUME_CMD;
-                                break;
-                            case 0x3c: /* OD Skip ROM */
-                                f120_state = F120_ROM_OD_SKIP;
-                                break;
-                            case 0x69: /* OD Match ROM */
-                                f120_state = F120_ROM_OD_MATCH;
-                                break;
-                            default:
-                                break;
-                        }
-}
+        /*while (rom_cmd_received) {
+			printf("0x%u\n", byte);
+            rom_cmd_received = false;
+        }*/
+
 		if (action) { // go to sleep if nothing had to be done, else recheck for activity
 			action = false;
 		} else {

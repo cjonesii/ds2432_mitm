@@ -43,7 +43,6 @@
 #define F120_PORT    A
 #define F120_PIN     4
 
-#define DS2432_TIMER 3
 #define DS2432_PORT  B
 #define DS2432_PIN   10
 
@@ -53,10 +52,11 @@ static volatile enum {
 	F120_WAIT_PRESENCE,
 	F120_DS2432_PRESENT,
 	F120_ROM_CMD,
+    F120_ROM_CMD_DONE,
 	F120_MEM_CMD,
 	F120_ROMCMD_READROM,
 	F120_ROMCMD_MATCHROM,
-	F120_ROM_SEARCH,
+	F120_ROMCMD_SEARCHROM,
 	F120_ROM_RESUME_CMD,
 	F120_ROM_OD_SKIP,
 	F120_ROM_OD_MATCH,
@@ -67,7 +67,7 @@ static volatile enum {
     DS2432_IDLE,
 	DS2432_WAIT_PRESENCE,
 	DS2432_DS2432_PRESENT,
-	DS2432_ROM_CMD,
+    DS2432_ROM_CMD_DONE,
 	DS2432_ROMCMD_READROM,
 	DS2432_ROMCMD_MATCHROM,
     DS2432_MAX
@@ -78,7 +78,7 @@ static volatile enum {
 static bool f120_rc_flag = false;
 /*static uint8_t bit = 0;*/
 static uint8_t bit_ctr = 0;
-static uint8_t byte = 0;
+//extern uint8_t byte;
 static uint8_t byte_ctr = 0;
 /*static uint8_t rom_cmd[8] = {0};*/
 static bool rx_mode = false;
@@ -119,7 +119,9 @@ void mitm_setup(void) {
 	exti_enable_request(EXTI(DS2432_PIN));
 	nvic_enable_irq(NVIC_EXTI_IRQ(DS2432_PIN));
     f120_state = F120_IDLE;
-    ds2432_state = DS2432_IDLE
+    ds2432_state = DS2432_IDLE;
+    rom_cmd_received = false;
+    byte = 0;
 }
 
 void EXTI_ISR(F120_PIN)(void) {
@@ -129,13 +131,17 @@ void EXTI_ISR(F120_PIN)(void) {
         switch (f120_state) {
             case F120_RESET:
                 /* This must be triggered by F120 (HW triggered) */
-                ds2432_state = DS2432_WAIT_PRESENCE:
+                ds2432_state = DS2432_WAIT_PRESENCE;
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_DS2432_PRESENT:
                 f120_state = F120_ROM_CMD;
                 break;
             case F120_ROM_CMD:
+                gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
+                break;
+            case F120_ROM_CMD_DONE:
+                ds2432_state = DS2432_ROM_CMD_DONE;
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROMCMD_READROM:
@@ -176,7 +182,6 @@ void EXTI_ISR(F120_PIN)(void) {
                 break;
             case F120_ROM_CMD:
                 timer_enable_irq(TIM(F120_TIMER), TIM_DIER_CC2IE);
-                ds2432_state = DS2432_ROM_CMD;
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROMCMD_READROM:
@@ -199,7 +204,7 @@ void EXTI_ISR(F120_PIN)(void) {
                 /* Relay signal to DS2432 */
                 gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
-            case F120_ROM_SEARCH:
+            case F120_ROMCMD_SEARCHROM:
                 /* Relay signal to DS2432 */
                 break;
             case F120_MEM_CMD:
@@ -221,6 +226,33 @@ void EXTI_ISR(DS2432_PIN)(void) {
             case DS2432_DS2432_PRESENT:
                 f120_state = F120_DS2432_PRESENT;
                 gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
+                break;
+            case DS2432_ROM_CMD_DONE:
+                switch(byte) {
+                    case 0x33: /* Read ROM */
+                        f120_state = F120_ROMCMD_READROM;
+                        break;
+                    case 0x55: /* Match ROM */
+                        f120_state = F120_ROMCMD_MATCHROM;
+                        break;
+                    case 0xf0: /* Search ROM */
+                        f120_state = F120_ROMCMD_SEARCHROM;
+                        break;
+                    case 0xcc: /* Skip ROM */
+                        f120_state = F120_MEM_CMD;
+                        break;
+                    case 0xa5: /* Resume Command */
+                        f120_state = F120_ROM_RESUME_CMD;
+                        break;
+                    case 0x3c: /* OD Skip ROM */
+                        f120_state = F120_ROM_OD_SKIP;
+                        break;
+                    case 0x69: /* OD Match ROM */
+                        f120_state = F120_ROM_OD_MATCH;
+                        break;
+                    default:
+                        break;
+                }
                 break;
             case DS2432_ROMCMD_READROM:
                 if (rx_mode == true) {
@@ -272,15 +304,45 @@ void TIM_ISR(F120_TIMER)(void) {
     }
 
     if (timer_interrupt_source(TIM(F120_TIMER), TIM_SR_CC2IF)) {
+        uint16_t gpio_val;
         switch (f120_state) {
             case F120_ROM_CMD:
+                gpio_val = gpio_get(GPIO(F120_PORT), GPIO(F120_PIN));
+                byte = byte | (gpio_val << bit_ctr);
                 bit_ctr++;
-                if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) {
-                    byte = byte | (1 << bit_ctr);
-                }
+
                 if (bit_ctr == 8) {
                     bit_ctr = 0;
-                    f120_state = F120_ROM_CMD_DONE;
+                    rom_cmd_received = true;
+                    if (gpio_val) {
+                        switch(byte) {
+                            case 0x33: /* Read ROM */
+                                f120_state = F120_ROMCMD_READROM;
+                                break;
+                            case 0x55: /* Match ROM */
+                                f120_state = F120_ROMCMD_MATCHROM;
+                                break;
+                            case 0xf0: /* Search ROM */
+                                f120_state = F120_ROMCMD_SEARCHROM;
+                                break;
+                            case 0xcc: /* Skip ROM */
+                                f120_state = F120_MEM_CMD;
+                                break;
+                            case 0xa5: /* Resume Command */
+                                f120_state = F120_ROM_RESUME_CMD;
+                                break;
+                            case 0x3c: /* OD Skip ROM */
+                                f120_state = F120_ROM_OD_SKIP;
+                                break;
+                            case 0x69: /* OD Match ROM */
+                                f120_state = F120_ROM_OD_MATCH;
+                                break;
+                            default:
+                                break;
+                        }
+                    } else {
+                        f120_state = F120_ROM_CMD_DONE;
+                    }
                 }
                 break;
             default:

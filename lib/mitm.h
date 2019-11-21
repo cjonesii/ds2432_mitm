@@ -21,5 +21,9 @@
  */
 #pragma once
 
+uint8_t byte;
+
+bool rom_cmd_received;
+
 void mitm_setup(void);
 
