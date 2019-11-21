@@ -167,8 +167,6 @@ error:
  *  this is the firmware function started by the micro-controller
  */
 
-//extern uint8_t byte;
-
 void main(void);
 void main(void)
 {	
@@ -284,10 +282,10 @@ void main(void)
 			}
 		}
 
-        /*while (rom_cmd_received) {
-			printf("0x%u\n", byte);
+        while (rom_cmd_received) {
+			printf("0x%02x\n", byte);
             rom_cmd_received = false;
-        }*/
+        }
 
 		if (action) { // go to sleep if nothing had to be done, else recheck for activity
 			action = false;

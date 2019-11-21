@@ -21,9 +21,9 @@
  */
 #pragma once
 
-uint8_t byte;
+extern volatile uint8_t byte;
 
-bool rom_cmd_received;
+extern volatile bool rom_cmd_received;
 
 void mitm_setup(void);
 

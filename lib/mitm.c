@@ -78,10 +78,11 @@ static volatile enum {
 static bool f120_rc_flag = false;
 /*static uint8_t bit = 0;*/
 static uint8_t bit_ctr = 0;
-//extern uint8_t byte;
+volatile uint8_t byte;
 static uint8_t byte_ctr = 0;
 /*static uint8_t rom_cmd[8] = {0};*/
 static bool rx_mode = false;
+volatile bool rom_cmd_received;
 
 void mitm_setup(void) {
     /* F120 Master */
