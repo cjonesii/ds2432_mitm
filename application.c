@@ -283,8 +283,21 @@ void main(void)
 		}
 
         while (rom_cmd_received) {
-			printf("0x%02x\n", byte);
+			printf("ROM CMD: 0x%02x\n", byte);
             rom_cmd_received = false;
+            byte = 0;
+        }
+
+        while (read_rom_byte) {
+			printf("ROM BYTE: 0x%02x\n", byte);
+            read_rom_byte = false;
+            byte = 0;
+        }
+
+        while (mem_cmd_received) {
+			printf("MEM CMD: 0x%02x\n", byte);
+            rom_cmd_received = false;
+            byte = 0;
         }
 
 		if (action) { // go to sleep if nothing had to be done, else recheck for activity

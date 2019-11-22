@@ -54,12 +54,21 @@ static volatile enum {
 	F120_ROM_CMD,
     F120_ROM_CMD_DONE,
 	F120_MEM_CMD,
+	F120_MEM_CMD_DONE,
 	F120_ROMCMD_READROM,
+    F120_ROMCMD_READROM_DONE,
 	F120_ROMCMD_MATCHROM,
 	F120_ROMCMD_SEARCHROM,
 	F120_ROM_RESUME_CMD,
 	F120_ROM_OD_SKIP,
 	F120_ROM_OD_MATCH,
+    F120_MEMCMD_WRITESCRATCHPAD,
+    F120_MEMCMD_READSCRATCHPAD,
+    F120_MEMCMD_LOAD1STSECRET,
+    F120_MEMCMD_COMPUTENXTSECRET,
+    F120_MEMCMD_COPYSCRATCHPAD,
+    F120_MEMCMD_READAUTHPAGE,
+    F120_MEMCMD_READMEM,
     F120_MAX
 } f120_state = F120_IDLE;
 
@@ -68,6 +77,7 @@ static volatile enum {
 	DS2432_WAIT_PRESENCE,
 	DS2432_DS2432_PRESENT,
     DS2432_ROM_CMD_DONE,
+    DS2432_MEM_CMD_DONE,
 	DS2432_ROMCMD_READROM,
 	DS2432_ROMCMD_MATCHROM,
     DS2432_MAX
@@ -75,17 +85,18 @@ static volatile enum {
 
 /* static bool bypass_mode = true;
  */ 
-static bool f120_rc_flag = false;
+static volatile bool f120_rc_flag = false;
 /*static uint8_t bit = 0;*/
-static uint8_t bit_ctr = 0;
+static volatile uint8_t bit_ctr = 0;
 volatile uint8_t byte;
-static uint8_t byte_ctr = 0;
+/* static uint8_t byte_ctr = 0; */
 /*static uint8_t rom_cmd[8] = {0};*/
-static bool rx_mode = false;
+static volatile bool rx_init_flag = false;
 volatile bool rom_cmd_received;
+volatile bool read_rom_byte;
+volatile bool mem_cmd_received;
 
 void mitm_setup(void) {
-    /* F120 Master */
 	rcc_periph_clock_enable(RCC_TIM(F120_TIMER));
 	timer_reset(TIM(F120_TIMER));
 	timer_set_mode(TIM(F120_TIMER), TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
@@ -122,7 +133,11 @@ void mitm_setup(void) {
     f120_state = F120_IDLE;
     ds2432_state = DS2432_IDLE;
     rom_cmd_received = false;
+    read_rom_byte = false;
+    mem_cmd_received = false;
+    rx_init_flag = false;
     byte = 0;
+    bit_ctr = 0;
 }
 
 void EXTI_ISR(F120_PIN)(void) {
@@ -131,7 +146,6 @@ void EXTI_ISR(F120_PIN)(void) {
     if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN))) { /* F120 GPIO Pulled High */
         switch (f120_state) {
             case F120_RESET:
-                /* This must be triggered by F120 (HW triggered) */
                 ds2432_state = DS2432_WAIT_PRESENCE;
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
@@ -145,21 +159,16 @@ void EXTI_ISR(F120_PIN)(void) {
                 ds2432_state = DS2432_ROM_CMD_DONE;
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
-            case F120_ROMCMD_READROM:
-                /* This must be triggered by F120 (HW triggered) */
-                if (rx_mode == false) {
-                    bit_ctr++;
-                    byte_ctr = bit_ctr / 8;
-
-                    if (bit_ctr == 64) {
-                        f120_state = F120_MEM_CMD;
-                        byte_ctr = 0;
-                    }
-                }
+            case F120_ROMCMD_READROM_DONE:
+                f120_state = F120_MEM_CMD;
                 break;
+            case F120_MEM_CMD:
+                gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
+                break;
+            case F120_MEM_CMD_DONE:
+                ds2432_state = DS2432_MEM_CMD_DONE;
+                gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
             case F120_ROMCMD_MATCHROM:
-                /* Master TX bits to match ROM */
-                /* Relay signal to DS2432 */
                 gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 bit_ctr++;
                 if (bit_ctr == 64) {
@@ -170,7 +179,7 @@ void EXTI_ISR(F120_PIN)(void) {
             default:
 				break;
         }
-    } else { /* low */
+    } else { /* F120 GPIO Pulled Low */
 		timer_disable_counter(TIM(F120_TIMER)); // stop timer for reconfiguration
 		timer_set_counter(TIM(F120_TIMER), 0); // reset timer counter
 		timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE); // disable all timers
@@ -187,18 +196,22 @@ void EXTI_ISR(F120_PIN)(void) {
                 break;
             case F120_ROMCMD_READROM:
                 /* F120 will always initiate the Read Time Slot */
-                /* rx_mode must be false if init by F120 (HW triggered) */
-                if (rx_mode == false) {
-                    rx_mode = true;
+                if (rx_init_flag == false) {
+                    rx_init_flag = true;
+                    ds2432_state = DS2432_ROMCMD_READROM;
+                    timer_enable_irq(TIM(F120_TIMER), TIM_DIER_CC2IE);
                     gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 }
-                /* Do nothing if init by SW */
                 /* DS2432 TX:
                  *   Chip Family Code 1byte
                  *   Serial Number    6bytes
                  *   CRC of the above 1byte 
-                 * No need to sniff the 64bits sent back by DS2432
+                 * No need to sniff the 8bytes (64bits) sent back by DS2432
                  */
+                break;
+            case F120_MEM_CMD:
+                timer_enable_irq(TIM(F120_TIMER), TIM_DIER_CC2IE);
+                gpio_clear(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 break;
             case F120_ROMCMD_MATCHROM:
                 /* Master TX bits to match ROM */
@@ -207,9 +220,6 @@ void EXTI_ISR(F120_PIN)(void) {
                 break;
             case F120_ROMCMD_SEARCHROM:
                 /* Relay signal to DS2432 */
-                break;
-            case F120_MEM_CMD:
-                /* If DS2432 doesn't respond, the reset pulse will trigger */
                 break;
             default:
                 break;
@@ -228,7 +238,7 @@ void EXTI_ISR(DS2432_PIN)(void) {
                 f120_state = F120_DS2432_PRESENT;
                 gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
                 break;
-            case DS2432_ROM_CMD_DONE:
+            case DS2432_ROM_CMD_DONE: /* change state at last 0 to 1 transition if last bit is 0 */
                 switch(byte) {
                     case 0x33: /* Read ROM */
                         f120_state = F120_ROMCMD_READROM;
@@ -254,12 +264,41 @@ void EXTI_ISR(DS2432_PIN)(void) {
                     default:
                         break;
                 }
+                rom_cmd_received = true;
                 break;
             case DS2432_ROMCMD_READROM:
-                if (rx_mode == true) {
-                    rx_mode = false;
+                if (rx_init_flag == true) {
+                    rx_init_flag = false;
                     gpio_set(GPIO(F120_PORT), GPIO(F120_PIN));
                 }
+                break;
+            case DS2432_MEM_CMD_DONE:
+                switch(byte) {
+                    case 0x33: /* Read ROM */
+                        f120_state = F120_ROMCMD_READROM;
+                        break;
+                    case 0x55: /* Match ROM */
+                        f120_state = F120_ROMCMD_MATCHROM;
+                        break;
+                    case 0xf0: /* Search ROM */
+                        f120_state = F120_ROMCMD_SEARCHROM;
+                        break;
+                    case 0xcc: /* Skip ROM */
+                        f120_state = F120_MEM_CMD;
+                        break;
+                    case 0xa5: /* Resume Command */
+                        f120_state = F120_ROM_RESUME_CMD;
+                        break;
+                    case 0x3c: /* OD Skip ROM */
+                        f120_state = F120_ROM_OD_SKIP;
+                        break;
+                    case 0x69: /* OD Match ROM */
+                        f120_state = F120_ROM_OD_MATCH;
+                        break;
+                    default:
+                        break;
+                }
+                mem_cmd_received = true;
                 break;
             default:
                 break;
@@ -270,19 +309,20 @@ void EXTI_ISR(DS2432_PIN)(void) {
                 f120_state = F120_WAIT_PRESENCE;
                 gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
             case DS2432_ROMCMD_READROM:
-            /* In Read ROM (Master RX Mode), the initial signal (low) from Master ilicits
-             * a response from DS2432 (if the bit to be transmitted is zero), however,
-             * since the master GPIO signal is emulated by software, it will remain low even 
-             * after the DS2432 stopped pulling it. To overcome this, a flag is set to determine
-             * whether the signal is from DS2432 or from the master.
-             * The signal from DS2432 will be relayed to master while the signal from master
-             * will set the signal back to high
-             */
-                if (rx_mode == true) {
-                    rx_mode = false;
+    /* In Read ROM (Master RX Mode / DS2432 TX Mode), the initial signal (low)
+     * from Master ilicits a response from DS2432 to keep the signal to a low
+     * state if the bit to be transmitted is zero, however, since the master
+     * GPIO signal is emulated by software, the signal tends to remain low even
+     * after the DS2432 stopped driving it. To overcome this, a flag is set to
+     * determine whether the signal came from DS2432 or from the master.
+     * The signal from DS2432 will be relayed to master while the signal from
+     * master will set the signal back to high.
+     */
+                if (rx_init_flag == true) {
+                    rx_init_flag = false;
                     gpio_set(GPIO(DS2432_PORT), GPIO(DS2432_PIN));
                 } else {
-                    rx_mode = true;
+                    rx_init_flag = true;
                     gpio_clear(GPIO(F120_PORT), GPIO(F120_PIN));
                 }
                 break;
@@ -297,7 +337,9 @@ void TIM_ISR(F120_TIMER)(void) {
         if (gpio_get(GPIO(F120_PORT), GPIO(F120_PIN)) == 0) {
             f120_state = F120_RESET;
             f120_rc_flag = false;
-            rx_mode = false;
+            rx_init_flag = false;
+            byte = 0;
+            bit_ctr = 0;
         }
         timer_disable_counter(TIM(F120_TIMER));
         timer_disable_irq(TIM(F120_TIMER), TIM_DIER_CC1IE | TIM_DIER_CC2IE | TIM_DIER_CC3IE);
@@ -314,8 +356,7 @@ void TIM_ISR(F120_TIMER)(void) {
 
                 if (bit_ctr == 8) {
                     bit_ctr = 0;
-                    rom_cmd_received = true;
-                    if (gpio_val) {
+                    if (gpio_val) { /* Change state immediately if last bit is 1 */
                         switch(byte) {
                             case 0x33: /* Read ROM */
                                 f120_state = F120_ROMCMD_READROM;
@@ -341,8 +382,63 @@ void TIM_ISR(F120_TIMER)(void) {
                             default:
                                 break;
                         }
+                        rom_cmd_received = true;
                     } else {
                         f120_state = F120_ROM_CMD_DONE;
+                    }
+                }
+                break;
+            case F120_ROMCMD_READROM:
+                gpio_val = gpio_get(GPIO(F120_PORT), GPIO(F120_PIN));
+                byte = byte | (gpio_val << bit_ctr);
+                bit_ctr++;
+                if ((bit_ctr % 8) == 0) {
+                    read_rom_byte = true;
+                }
+                if (bit_ctr == 64) {
+                    bit_ctr = 0;
+                    if (gpio_val) { /* Change state immediately if last bit is 1 */
+                        f120_state = F120_MEM_CMD;
+                    } else {
+                        f120_state = F120_ROMCMD_READROM_DONE;
+                    }
+                }
+                break;
+            case F120_MEM_CMD:
+                gpio_val = gpio_get(GPIO(F120_PORT), GPIO(F120_PIN));
+                byte = byte | (gpio_val << bit_ctr);
+                bit_ctr++;
+                if (bit_ctr == 8) {
+                    bit_ctr = 0;
+                    if (gpio_val) { /* Change state immediately if last bit is 1 */
+                        switch(byte) {
+                            case 0x0F: /* Write Scratchpad */
+                                f120_state = F120_MEMCMD_WRITESCRATCHPAD;
+                                break;
+                            case 0xAA: /* Read Scratchpad */
+                                f120_state = F120_MEMCMD_READSCRATCHPAD;
+                                break;
+                            case 0x5A: /* Load First Secret */
+                                f120_state = F120_MEMCMD_LOAD1STSECRET;
+                                break;
+                            case 0x33: /* Compute Next Secret */
+                                f120_state = F120_MEMCMD_COMPUTENXTSECRET;
+                                break;
+                            case 0x55: /* Copy Scratchpad */
+                                f120_state = F120_MEMCMD_COPYSCRATCHPAD;
+                                break;
+                            case 0xA5: /* Read Authenticated Page */
+                                f120_state = F120_MEMCMD_READAUTHPAGE;
+                                break;
+                            case 0xF0: /* Read Memory */
+                                f120_state = F120_MEMCMD_READMEM;
+                                break;
+                            default:
+                                break;
+                        }
+                        mem_cmd_received = true;
+                    } else {
+                        f120_state = F120_MEM_CMD_DONE;
                     }
                 }
                 break;

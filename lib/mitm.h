@@ -25,5 +25,9 @@ extern volatile uint8_t byte;
 
 extern volatile bool rom_cmd_received;
 
+extern volatile bool read_rom_byte;
+
+extern volatile bool mem_cmd_received;
+
 void mitm_setup(void);
 
